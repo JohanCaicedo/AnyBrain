@@ -1,0 +1,18 @@
+# Ignorar el entorno virtual (pesa mucho y se crea solo)
+venv/
+
+# Ignorar claves secretas (SEGURIDAD)
+.env
+
+# Ignorar base de datos vectorial (se genera sola al usarlo)
+data/vector_db/
+
+# Ignorar historial de chats
+data/history/
+
+# Ignorar archivos temporales de Python
+__pycache__/
+*.pyc
+
+# Ignorar archivos temporales de audio
+*.mp3

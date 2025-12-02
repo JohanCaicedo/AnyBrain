@@ -16,3 +16,6 @@ __pycache__/
 
 # Ignorar archivos temporales de audio
 *.mp3
+
+# Ignorar configuración de usuario (claves privadas)
+data/user_config.json

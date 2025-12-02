@@ -1,151 +1,194 @@
 import sys
 import os
+import json
+import re
+import asyncio
+from openai import OpenAI
+
+# Ajuste de rutas
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import chainlit as cl
-from openai import OpenAI
-from src.config import DB_PATH, EMBEDDING_MODEL_NAME, LLM_API_KEY
+from src.config import DB_PATH, EMBEDDING_MODEL_NAME, DATA_DIR
 from src.core.database import VectorDatabase
 from chainlit.input_widget import Select, TextInput
 import edge_tts
-import re
+
+# --- CONFIGURACIÓN DE PERSISTENCIA ---
+CONFIG_FILE = os.path.join(DATA_DIR, "user_config.json")
 
 # --- INICIALIZACIÓN ---
 db = VectorDatabase(DB_PATH, EMBEDDING_MODEL_NAME)
+
+def load_user_config():
+    """Carga la configuración guardada"""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def save_user_config(new_data):
+    """Actualiza y guarda la configuración sin borrar lo anterior"""
+    current_config = load_user_config()
+    current_config.update(new_data)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(current_config, f, indent=4)
 
 def clean_text_for_audio(text):
     text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
     text = re.sub(r'#+\s?', '', text)
     text = re.sub(r'```[\s\S]*?```', ' código ', text)
+    text = re.sub(r'\[.*?\]', '', text)
     return text
 
-def get_llm_client(provider, api_key_input=None):
-    """Configura el cliente según el proveedor elegido"""
-    key = api_key_input if api_key_input and api_key_input.strip() else LLM_API_KEY
-
+def get_client(provider, api_key=None):
     if provider == "Google Gemini":
-        return OpenAI(api_key=key, base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+        return OpenAI(api_key=api_key, base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
     elif provider == "Ollama (Local)":
         return OpenAI(api_key="ollama", base_url="http://localhost:11434/v1")
     elif provider == "DeepSeek":
-        return OpenAI(api_key=key, base_url="https://api.deepseek.com")
+        return OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
     elif provider == "OpenAI (ChatGPT)":
-        return OpenAI(api_key=key, base_url="https://api.openai.com/v1")
+        return OpenAI(api_key=api_key, base_url="https://api.openai.com/v1")
     return None
 
-async def dibujar_ajustes(proveedor_actual):
-    """
-    Menú de configuración de AnyBrain
-    """
+async def update_settings_ui(provider, selected_model=None):
+    """Construye el menú recuperando la clave guardada ESPECÍFICA de ese proveedor"""
+    
+    # 1. Recuperar clave guardada para este proveedor
+    saved_config = load_user_config()
+    saved_key = ""
+    
+    if provider == "Google Gemini":
+        saved_key = saved_config.get("google_key", "")
+    elif provider == "DeepSeek":
+        saved_key = saved_config.get("deepseek_key", "")
+    elif provider == "OpenAI (ChatGPT)":
+        saved_key = saved_config.get("openai_key", "")
+
     inputs = [
         Select(
             id="Provider",
             label="🧠 Proveedor de IA",
             values=["Google Gemini", "Ollama (Local)", "DeepSeek", "OpenAI (ChatGPT)"],
-            initial_index=["Google Gemini", "Ollama (Local)", "DeepSeek", "OpenAI (ChatGPT)"].index(proveedor_actual)
-        ),
-        TextInput(
-            id="SystemPrompt", 
-            label="🎭 Personalidad", 
-            initial="Eres AnyBrain, un asistente experto, directo y técnico."
+            initial_index=["Google Gemini", "Ollama (Local)", "DeepSeek", "OpenAI (ChatGPT)"].index(provider)
         )
     ]
 
-    if proveedor_actual == "Google Gemini":
-        inputs.extend([
-            Select(
-                id="ModelName",
-                label="💎 Modelo Google",
-                values=["gemini-1.5-pro-latest", "gemini-1.5-flash", "gemini-2.0-flash-exp"],
-                initial_index=0
-            ),
-            TextInput(id="ApiKey", label="🔑 Google API Key (Opcional)", initial="")
-        ])
+    # 2. Mostrar campo de clave (Pre-rellenado si ya existe)
+    if provider != "Ollama (Local)":
+        inputs.append(TextInput(id="ApiKey", label=f"🔑 API Key ({provider})", initial=saved_key))
 
-    elif proveedor_actual == "Ollama (Local)":
-        inputs.extend([
-            TextInput(id="ModelName", label="🦙 Modelo Ollama (Ej: llama3)", initial="llama3.1")
-        ])
-
-    elif proveedor_actual == "DeepSeek":
-        inputs.extend([
-            TextInput(id="ModelName", label="🤖 Modelo DeepSeek", initial="deepseek-chat"),
-            TextInput(id="ApiKey", label="🔑 DeepSeek API Key", initial="")
-        ])
-
-    elif proveedor_actual == "OpenAI (ChatGPT)":
-        inputs.extend([
-            Select(
-                id="ModelName",
-                label="🧠 Modelo GPT",
-                values=["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"],
-                initial_index=0
-            ),
-            TextInput(id="ApiKey", label="🔑 OpenAI API Key", initial="")
-        ])
-
+    # 3. Mostrar campo de modelo
+    default_model = selected_model or "gemini-1.5-flash"
+    if provider == "Ollama (Local)": default_model = "llama3.1"
+    
+    inputs.append(TextInput(id="ModelName", label="💎 Modelo", initial=default_model))
+    inputs.append(TextInput(id="SystemPrompt", label="🎭 Personalidad", initial="Eres AnyBrain, un asistente experto."))
+    
     await cl.ChatSettings(inputs).send()
 
 @cl.on_chat_start
 async def start():
-    # Por defecto arrancamos con Google
-    provider_default = "Google Gemini"
+    saved_config = load_user_config()
     
-    await dibujar_ajustes(provider_default)
+    # Cargar último proveedor usado o Google por defecto
+    provider = saved_config.get("last_provider", "Google Gemini")
+    model = saved_config.get("last_model", "gemini-1.5-flash")
+    
+    # Recuperar la clave correcta según el proveedor
+    api_key = ""
+    if provider == "Google Gemini": api_key = saved_config.get("google_key", "")
+    elif provider == "DeepSeek": api_key = saved_config.get("deepseek_key", "")
+    elif provider == "OpenAI (ChatGPT)": api_key = saved_config.get("openai_key", "")
 
-    cl.user_session.set("client", get_llm_client(provider_default))
-    cl.user_session.set("model_name", "gemini-1.5-pro-latest")
-    cl.user_session.set("system_prompt", "Eres AnyBrain, un asistente experto.")
-    cl.user_session.set("current_provider", provider_default)
+    # Configurar sesión
+    cl.user_session.set("provider", provider)
+    cl.user_session.set("api_key", api_key)
+    cl.user_session.set("model", model)
+    cl.user_session.set("client", get_client(provider, api_key))
+    cl.user_session.set("system_prompt", "Eres AnyBrain.")
 
-    # MENSAJE DE BIENVENIDA ACTUALIZADO
-    await cl.Message(content="🧠 **AnyBrain Listo**\n\nSistema de embeddings cargado. Abre los Ajustes (⚙️) para configurar tu modelo de IA.").send()
+    await update_settings_ui(provider, model)
+    
+    msg = f"🧠 **AnyBrain Listo**\nConectado a: **{provider}**\nModelo: `{model}`"
+    if not api_key and provider != "Ollama (Local)":
+        msg += "\n\n⚠️ **Falta API Key.** Ve a Ajustes (⚙️) para configurarla."
+    
+    await cl.Message(content=msg).send()
 
 @cl.on_settings_update
 async def setup_agent(settings):
-    nuevo_proveedor = settings["Provider"]
-    proveedor_anterior = cl.user_session.get("current_provider")
-
-    if nuevo_proveedor != proveedor_anterior:
-        cl.user_session.set("current_provider", nuevo_proveedor)
-        await dibujar_ajustes(nuevo_proveedor)
-        await cl.Message(content=f"🔄 **AnyBrain cambiando a {nuevo_proveedor}...**\nAbre Ajustes de nuevo para finalizar.").send()
-        return
-
-    model = settings.get("ModelName", "gemini-1.5-pro-latest")
+    provider = settings["Provider"]
     api_key = settings.get("ApiKey", "")
+    model = settings["ModelName"]
     prompt = settings["SystemPrompt"]
 
-    new_client = get_llm_client(nuevo_proveedor, api_key)
+    # --- LÓGICA INTELIGENTE DE GUARDADO ---
+    # Guardamos la clave en su casillero correspondiente
+    config_to_save = {
+        "last_provider": provider,
+        "last_model": model
+    }
     
-    cl.user_session.set("client", new_client)
-    cl.user_session.set("model_name", model)
-    cl.user_session.set("system_prompt", prompt)
+    if api_key: # Solo guardamos si el usuario escribió algo
+        if provider == "Google Gemini":
+            config_to_save["google_key"] = api_key
+        elif provider == "DeepSeek":
+            config_to_save["deepseek_key"] = api_key
+        elif provider == "OpenAI (ChatGPT)":
+            config_to_save["openai_key"] = api_key
 
-    await cl.Message(content=f"✅ **AnyBrain Configurado**\n\n- Motor: {nuevo_proveedor}\n- Modelo: `{model}`").send()
+    save_user_config(config_to_save)
+    # --------------------------------------
+
+    # Si cambió el proveedor, intentamos cargar la clave guardada de ese nuevo proveedor
+    # para que la sesión no se quede con la clave del anterior
+    if not api_key:
+        saved = load_user_config()
+        if provider == "Google Gemini": api_key = saved.get("google_key", "")
+        elif provider == "DeepSeek": api_key = saved.get("deepseek_key", "")
+        elif provider == "OpenAI (ChatGPT)": api_key = saved.get("openai_key", "")
+
+    cl.user_session.set("client", get_client(provider, api_key))
+    cl.user_session.set("model", model)
+    cl.user_session.set("system_prompt", prompt)
+    cl.user_session.set("provider", provider)
+    cl.user_session.set("api_key", api_key)
+
+    # Refrescar menú para que muestre la clave correcta del nuevo proveedor
+    await update_settings_ui(provider, model)
+
+    await cl.Message(content=f"✅ **Configuración Guardada**\nProveedor: {provider}").send()
 
 @cl.on_message
 async def main(message: cl.Message):
     client = cl.user_session.get("client")
-    model = cl.user_session.get("model_name")
-    system_instruction = cl.user_session.get("system_prompt")
-
-    # 1. RAG
-    docs = db.similarity_search(message.content, k=5)
-    context_str = "\n\n".join([f"[Fuente: {d.metadata.get('source', 'unk')}]\n{d.page_content}" for d in docs])
+    model = cl.user_session.get("model")
     
-    # 2. Generación
+    # Validación básica
+    if not client or (not cl.user_session.get("api_key") and cl.user_session.get("provider") != "Ollama (Local)"):
+        await cl.Message(content="❌ **Falta API Key.**\nVe a Ajustes (⚙️), selecciona tu proveedor y pon la clave.").send()
+        return
+
+    docs = db.similarity_search(message.content, k=4)
+    source_elements = [cl.Text(name=f"Fuente {i+1}", content=d.page_content, display="side") for i, d in enumerate(docs)]
+    context_str = "\n\n".join([f"[Fuente {i+1}]: {d.page_content}" for i, d in enumerate(docs)])
+
     try:
         stream = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": f"CONTEXTO:\n{context_str}\n\nCONSULTA:\n{message.content}"}
+                {"role": "system", "content": cl.user_session.get("system_prompt")},
+                {"role": "user", "content": f"Contexto:\n{context_str}\n\nPregunta: {message.content}"}
             ],
             stream=True
         )
         
-        msg = cl.Message(content="")
+        msg = cl.Message(content="", elements=source_elements)
         full_text = ""
         
         for chunk in stream:
@@ -153,16 +196,15 @@ async def main(message: cl.Message):
             if token:
                 await msg.stream_token(token)
                 full_text += token
-                
+        
         await msg.update()
         
-        # 3. Voz
         actions = [cl.Action(name="voice", payload={"text": full_text}, label="🔊 Escuchar", description="TTS")]
         msg.actions = actions
         await msg.update()
 
     except Exception as e:
-        await cl.Message(content=f"❌ **Error en AnyBrain:** {str(e)}").send()
+        await cl.Message(content=f"❌ **Error:** {str(e)}").send()
 
 @cl.action_callback("voice")
 async def voice_action(action):

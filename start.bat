@@ -4,7 +4,8 @@ color 0B
 cls
 
 echo ==========================================================
-echo        AnyBrain - LOCAL RAG & EMBEDDING TOOL
+:: Usamos ^& para que no piense que es un comando
+echo        AnyBrain - LOCAL RAG ^& EMBEDDING TOOL
 echo ==========================================================
 echo.
 
@@ -35,7 +36,8 @@ if not exist "venv" (
     color 0E
     echo [NOTICE] First time running AnyBrain.
     echo Creating virtual environment and installing dependencies...
-    echo (This process may take a few minutes).
+    :: Quitamos los parentesis del texto para evitar errores de sintaxis
+    echo - This process may take a few minutes...
     echo.
     
     :: Create venv
